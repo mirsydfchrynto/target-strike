@@ -1,0 +1,110 @@
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+[RequireComponent(typeof(CharacterController))]
+public class PlayerTPS : MonoBehaviour
+{
+    [Header("Movement (GTA Style)")]
+    public float walkSpeed = 2.0f;
+    public float runSpeed = 6.0f;
+    public float rotationSpeed = 15.0f;
+    public float acceleration = 10.0f;
+
+    [Header("Physics")]
+    public float jumpForce = 7.0f;
+    public float gravity = -25.0f;
+    public LayerMask groundMask;
+    public Transform groundCheck;
+    public float groundDistance = 0.2f;
+
+    [Header("References")]
+    public Transform cameraTransform;
+    
+    private Animator animator;
+    private CharacterController controller;
+    private TPS inputActions;
+
+    private float velocityY;
+    private bool isGrounded;
+    private Vector2 moveInput;
+    private bool jumpRequest;
+    
+    private float currentSpeed;
+    private Vector3 moveDirection;
+
+    private void Awake()
+    {
+        controller = GetComponent<CharacterController>();
+        animator = GetComponent<Animator>();
+        inputActions = new TPS();
+        
+        if (cameraTransform == null && Camera.main != null) 
+            cameraTransform = Camera.main.transform;
+
+        controller.center = new Vector3(0, 0.93f, 0);
+        controller.height = 1.8f;
+        controller.radius = 0.3f;
+    }
+
+    private void OnEnable()
+    {
+        inputActions.Enable();
+        inputActions.Player.Move.performed += ctx => moveInput = ctx.ReadValue<Vector2>();
+        inputActions.Player.Move.canceled += ctx => moveInput = Vector2.zero;
+        inputActions.Player.Jump.performed += _ => jumpRequest = true;
+    }
+
+    private void OnDisable() => inputActions.Disable();
+
+    private void Update()
+    {
+        // Ground Check
+        isGrounded = Physics.CheckSphere(groundCheck.position, groundDistance, groundMask);
+        if (isGrounded && velocityY < 0) velocityY = -2f; 
+
+        // Movement
+        Vector3 inputDir = new Vector3(moveInput.x, 0, moveInput.y).normalized;
+        bool isSprinting = Keyboard.current.leftShiftKey.isPressed && moveInput.y > 0.1f;
+        float targetSpeed = inputDir.magnitude > 0.1f ? (isSprinting ? runSpeed : walkSpeed) : 0f;
+        currentSpeed = Mathf.MoveTowards(currentSpeed, targetSpeed, acceleration * Time.deltaTime);
+
+        if (inputDir.magnitude >= 0.1f)
+        {
+            Vector3 camForward = cameraTransform.forward;
+            Vector3 camRight = cameraTransform.right;
+            camForward.y = 0; camRight.y = 0;
+            moveDirection = (camForward * inputDir.z + camRight * inputDir.x).normalized;
+            if (moveDirection != Vector3.zero)
+            {
+                Quaternion targetRotation = Quaternion.LookRotation(moveDirection);
+                transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationSpeed * Time.deltaTime);
+            }
+        }
+        controller.Move(moveDirection * currentSpeed * Time.deltaTime);
+
+        // Jump
+        if (jumpRequest && isGrounded)
+        {
+            velocityY = Mathf.Sqrt(jumpForce * -2f * gravity);
+            if (animator != null && animator.runtimeAnimatorController != null) animator.SetTrigger("jump");
+        }
+        jumpRequest = false;
+
+        // Gravity
+        velocityY += gravity * Time.deltaTime;
+        controller.Move(new Vector3(0, velocityY, 0) * Time.deltaTime);
+
+        // Animator Sync (Safely)
+        if (animator != null && animator.runtimeAnimatorController != null)
+        {
+            animator.SetFloat("moveSpeed", currentSpeed);
+            animator.SetBool("isGrounded", isGrounded);
+            animator.SetFloat("yVelocity", velocityY);
+            
+            if (isGrounded && currentSpeed > 0.1f)
+                animator.speed = Mathf.Lerp(0.8f, 1.2f, currentSpeed / runSpeed);
+            else
+                animator.speed = 1.0f;
+        }
+    }
+}

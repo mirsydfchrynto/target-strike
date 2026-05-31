@@ -1,0 +1,164 @@
+#if UNITY_EDITOR
+using UnityEngine;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine.SceneManagement;
+using UnityEditor.Animations;
+using System.IO;
+
+[InitializeOnLoad]
+public class SetupTPSScene
+{
+    static SetupTPSScene() { EditorApplication.delayCall += RunSetup; }
+
+    [MenuItem("Tools/SUPER AUTO-JOKI (REAL GAROK)")]
+    public static void ManualSetup() { EditorPrefs.SetBool("GarokSetup_v4", false); RunSetup(); }
+
+    static void RunSetup()
+    {
+        if (EditorPrefs.GetBool("GarokSetup_v4", false)) return;
+        Debug.Log("== STARTING SUPER AUTO-JOKI: SETTING UP GAROK CHARACTER ==");
+
+        string garokPath = "Assets/Bahan Praktikum TPS/source/garok10.fbx";
+        string texDir = "Assets/Bahan Praktikum TPS/textures/";
+
+        // 1. Setup Garok Rig to Humanoid
+        ModelImporter importer = AssetImporter.GetAtPath(garokPath) as ModelImporter;
+        if (importer != null && importer.animationType != ModelImporterAnimationType.Human)
+        {
+            importer.animationType = ModelImporterAnimationType.Human;
+            importer.SaveAndReimport();
+        }
+
+        // 2. Setup Materials (Fix 'putih polos')
+        string matDir = "Assets/Bahan Praktikum TPS/Materials_Generated/";
+        if (!Directory.Exists(matDir)) Directory.CreateDirectory(matDir);
+
+        string[] parts = { "Body", "Bottom", "Hair", "Hat", "Shoes", "Top" };
+        foreach (var part in parts)
+        {
+            string matPath = matDir + "Garok_" + part + ".mat";
+            Material mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
+            if (mat == null)
+            {
+                mat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+                AssetDatabase.CreateAsset(mat, matPath);
+            }
+            Texture2D diffuse = AssetDatabase.LoadAssetAtPath<Texture2D>(texDir + "garok12_" + part + "_Diffuse.png");
+            if (diffuse != null) mat.SetTexture("_BaseMap", diffuse);
+            
+            Texture2D normal = AssetDatabase.LoadAssetAtPath<Texture2D>(texDir + "garok12_" + part + "_Normal.png");
+            if (normal != null) {
+                mat.SetTexture("_BumpMap", normal);
+                mat.EnableKeyword("_NORMALMAP");
+            }
+            EditorUtility.SetDirty(mat);
+        }
+
+        // 3. Setup Scene
+        if (SceneManager.GetActiveScene().name != "TPS") EditorSceneManager.OpenScene("Assets/Scenes/TPS.unity");
+        GameObject player = GameObject.Find("player");
+        if (player == null) return;
+
+        // Cleanup visuals
+        for (int i = player.transform.childCount - 1; i >= 0; i--)
+        {
+            GameObject child = player.transform.GetChild(i).gameObject;
+            if (child.name != "targetcamera" && child.name != "GroundCheck" && !child.name.Contains("garok"))
+                GameObject.DestroyImmediate(child);
+        }
+
+        // Instantiate Garok
+        if (player.transform.Find("garok10") == null)
+        {
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(garokPath);
+            if (prefab != null) {
+                GameObject garok = PrefabUtility.InstantiatePrefab(prefab) as GameObject;
+                garok.transform.SetParent(player.transform);
+                garok.transform.localPosition = Vector3.zero;
+                garok.transform.localRotation = Quaternion.identity;
+                garok.name = "garok10";
+
+                // Assign Materials
+                SkinnedMeshRenderer[] renderers = garok.GetComponentsInChildren<SkinnedMeshRenderer>();
+                foreach (var smr in renderers)
+                {
+                    Material[] newMats = new Material[smr.sharedMaterials.Length];
+                    for (int i = 0; i < smr.sharedMaterials.Length; i++)
+                    {
+                        Material oldMat = smr.sharedMaterials[i];
+                        if (oldMat == null) continue;
+                        foreach (var part in parts)
+                            if (oldMat.name.Contains(part)) newMats[i] = AssetDatabase.LoadAssetAtPath<Material>(matDir + "Garok_" + part + ".mat");
+                    }
+                    smr.sharedMaterials = newMats;
+                }
+            }
+        }
+
+        // 4. Setup Animator Controller Safely
+        Animator animator = player.GetComponent<Animator>();
+        if (animator == null) animator = player.AddComponent<Animator>();
+        
+        string controllerPath = "Assets/animasi/idle/player.controller";
+        AnimatorController controller = AnimatorController.CreateAnimatorControllerAtPath(controllerPath);
+        
+        // Remove default layer and re-add to be clean
+        controller.RemoveLayer(0);
+        controller.AddLayer("Base Layer");
+        
+        controller.AddParameter("moveSpeed", AnimatorControllerParameterType.Float);
+        controller.AddParameter("yVelocity", AnimatorControllerParameterType.Float);
+        controller.AddParameter("isGrounded", AnimatorControllerParameterType.Bool);
+        controller.AddParameter("jump", AnimatorControllerParameterType.Trigger);
+
+        var sm = controller.layers[0].stateMachine;
+
+        // Load Clips
+        AnimationClip idle = AssetDatabase.LoadAssetAtPath<AnimationClip>("Assets/Bahan Praktikum TPS/Idle.fbx");
+        AnimationClip walk = AssetDatabase.LoadAssetAtPath<AnimationClip>("Assets/Bahan Praktikum TPS/Walking.fbx");
+        AnimationClip jump = AssetDatabase.LoadAssetAtPath<AnimationClip>("Assets/animasi/Jumping Up.fbx");
+        AnimationClip fall = AssetDatabase.LoadAssetAtPath<AnimationClip>("Assets/animasi/Floating.fbx");
+        AnimationClip land = AssetDatabase.LoadAssetAtPath<AnimationClip>("Assets/animasi/Landing.fbx");
+
+        var idleS = sm.AddState("Idle", new Vector3(300, 0, 0)); idleS.motion = idle;
+        var walkS = sm.AddState("Walk", new Vector3(300, 100, 0)); walkS.motion = walk;
+        var jumpS = sm.AddState("Jump", new Vector3(600, 0, 0)); jumpS.motion = jump;
+        var fallS = sm.AddState("Fall", new Vector3(600, 100, 0)); fallS.motion = fall;
+        var landS = sm.AddState("Land", new Vector3(600, 200, 0)); landS.motion = land;
+
+        idleS.AddTransition(walkS).AddCondition(AnimatorConditionMode.Greater, 0.1f, "moveSpeed");
+        walkS.AddTransition(idleS).AddCondition(AnimatorConditionMode.Less, 0.1f, "moveSpeed");
+        sm.AddAnyStateTransition(jumpS).AddCondition(AnimatorConditionMode.If, 0, "jump");
+        jumpS.AddTransition(fallS).AddCondition(AnimatorConditionMode.Less, 0.1f, "yVelocity");
+        fallS.AddTransition(landS).AddCondition(AnimatorConditionMode.If, 0, "isGrounded");
+        landS.AddTransition(idleS).hasExitTime = true;
+
+        animator.runtimeAnimatorController = controller;
+        Object[] sub = AssetDatabase.LoadAllAssetsAtPath(garokPath);
+        foreach (var o in sub) if (o is Avatar) animator.avatar = (Avatar)o;
+
+        // 5. Setup Ground Check
+        GameObject plane = GameObject.Find("Plane");
+        int tanahL = LayerMask.NameToLayer("tanah");
+        if (plane != null && tanahL != -1) plane.layer = tanahL;
+
+        PlayerTPS tps = player.GetComponent<PlayerTPS>();
+        if (tps != null) {
+            tps.groundMask = (1 << 0) | (tanahL != -1 ? (1 << tanahL) : 0);
+            tps.groundCheck = player.transform.Find("GroundCheck");
+            if (tps.groundCheck == null) { 
+                GameObject gc = new GameObject("GroundCheck"); 
+                gc.transform.parent = player.transform; 
+                gc.transform.localPosition = new Vector3(0,0.1f,0); 
+                tps.groundCheck = gc.transform; 
+            }
+            if (Camera.main != null) tps.cameraTransform = Camera.main.transform;
+        }
+
+        EditorSceneManager.SaveScene(SceneManager.GetActiveScene());
+        EditorPrefs.SetBool("GarokSetup_v4", true);
+        Debug.Log("== SUPER AUTO-JOKI COMPLETE! GAROK IS READY TO ROCK. PRESS PLAY ==");
+    }
+}
+#endif
